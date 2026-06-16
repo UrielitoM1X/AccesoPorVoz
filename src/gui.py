@@ -5,337 +5,306 @@ import time
 import matplotlib.pyplot as plt
 from scipy.io import wavfile
 
+# Importaciones locales de tu arquitectura
 from audio_processor import extract_features
 from predictor import AudioPredictor
 from recorder import record_audio
 from voice_auth import registrar_usuario, verificar_voz
 from similar_finder import clasificar_silaba_por_vecinos
 
-st.set_page_config(page_title="Clasificador de Voz - ESCOM", layout="centered")
-
-st.title("🎙️ Analizador de Voz en Tiempo Real")
-st.markdown(
-    "Proyecto de Ingeniería en IA: Clasificación de Género, Sílabas y Acceso por Voz"
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="Voice Classifier AI - ESCOM",
+    page_icon="🎙️",
+    layout="wide"
 )
 
-
-def load_models():
+# --- CARGA DE MODELOS (CACHED) ---
+@st.cache_resource
+def load_predictor():
     return AudioPredictor()
 
+predictor = load_predictor()
 
-predictor = load_models()
-
-
+# --- ESTADO DE LA SESIÓN (STATE MANAGMENT) ---
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
-
 if "usuario" not in st.session_state:
     st.session_state["usuario"] = None
+if "resultado" not in st.session_state:
+    st.session_state["resultado"] = None
+if "seccion_actual" not in st.session_state:
+    # Secciones posibles: "Identificación de Sílabas", "Registrar Usuario", "Validar Usuario (Login)"
+    st.session_state["seccion_actual"] = "Identificación de Sílabas"
 
-
+# --- FUNCIONES DE AUDIO ---
 def normalizar_audio(x):
     x = np.asarray(x, dtype=float)
-
-    if x.ndim > 1:
+    if x.ndim > 1: 
         x = np.mean(x, axis=1)
-
     max_val = np.max(np.abs(x)) + 1e-12
     return x / max_val
 
-
-def graficar_audio(y, sr):
-    t = np.linspace(0, len(y) / sr, num=len(y))
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(t, y, linewidth=0.8)
-    ax.set_ylim([-1, 1])
-    ax.set_title("Forma de onda del audio")
-    ax.set_xlabel("Tiempo (segundos)")
-    ax.set_ylabel("Amplitud")
-    ax.grid(True)
-
+def plot_wave(y, sr):
+    fig, ax = plt.subplots(figsize=(10, 2.5))
+    t = np.linspace(0, len(y)/sr, len(y))
+    ax.plot(t, y, color='#00FFCC', linewidth=0.7)  # Estilo de alta visibilidad
+    ax.set_facecolor('#111625')
+    fig.patch.set_facecolor('#0E1117')
+    ax.tick_params(colors='white')
+    ax.grid(alpha=0.1, color='white')
     st.pyplot(fig)
 
 
-def graficar_forma_onda_archivo(path_audio, titulo="Forma de onda del audio"):
-    sr, y = wavfile.read(path_audio)
-    y = normalizar_audio(y)
-
-    t = np.linspace(0, len(y) / sr, num=len(y))
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(t, y, linewidth=0.8)
-    ax.set_ylim([-1, 1])
-    ax.set_title(titulo)
-    ax.set_xlabel("Tiempo (segundos)")
-    ax.set_ylabel("Amplitud")
-    ax.grid(True)
-
-    st.pyplot(fig)
-
-
-def pantalla_login():
-    st.subheader("🔐 Acceso por reconocimiento de voz")
-
-    st.info(
-        'Para entrar, graba tu voz diciendo una frase como: "Mi voz es mi contraseña".'
-    )
-
-    opcion = st.radio(
-        "Selecciona una opción:", ["Verificar acceso", "Registrar usuario"]
-    )
-
-    if opcion == "Registrar usuario":
-        st.write("### Registrar nuevo usuario autorizado")
-
-        nombre = st.text_input("Nombre del usuario")
-        duracion = st.slider("Duración de cada muestra", 2, 5, 3)
-        muestras = st.slider("Número de muestras", 1, 5, 3)
-
-        if st.button("Registrar voz"):
-            if nombre.strip() == "":
-                st.error("Escribe un nombre de usuario.")
-                return
-
-            with st.spinner("Registrando muestras de voz..."):
-                ok, mensaje = registrar_usuario(
-                    nombre_usuario=nombre.strip(),
-                    duracion=duracion,
-                    num_muestras=muestras,
-                )
-
-            if ok:
-                st.success(mensaje)
-            else:
-                st.error(mensaje)
-
-    else:
-        st.write("### Verificar acceso")
-
-        duracion = st.slider("Duración de verificación", 2, 5, 3)
-        umbral = st.slider("Umbral de similitud", 50.0, 1000.0, 180.0, 5.0)
-
-        if st.button("🎙️ Grabar voz y verificar"):
-            os.makedirs("data/auth", exist_ok=True)
-
-            timestamp = time.time_ns()
-            temp_path = f"data/auth/login_{timestamp}.wav"
-
-            with st.spinner("Grabando voz..."):
-                path = record_audio(temp_path, duration=duracion)
-
-            if path is None:
-                st.error("No se pudo grabar el audio.")
-                return
-
-            st.audio(path, format="audio/wav")
-
-            with st.spinner("Verificando identidad..."):
-                acceso, usuario, distancia, mensaje = verificar_voz(
-                    path_audio=path, umbral=umbral
-                )
-
-            if acceso:
-                st.session_state["autenticado"] = True
-                st.session_state["usuario"] = usuario
-                st.success(f"✅ {mensaje} Usuario reconocido: {usuario}")
-                st.rerun()
-            else:
-                st.error(f"❌ {mensaje}")
-                if usuario is not None:
-                    st.write(f"Usuario más parecido: {usuario}")
-                    st.write(f"Distancia obtenida: {distancia:.4f}")
-
-
-def mostrar_similares():
-    if "resultado" not in st.session_state:
-        return
-
-    st.divider()
-    st.subheader("🔎 5 vecinos más cercanos del dataset")
-
-    features_actuales = st.session_state["resultado"]["features"]
-    silaba_predicha = st.session_state["resultado"]["silaba"]
-
-    silaba_predicha, similares = clasificar_silaba_por_vecinos(
-        features_actuales, csv_base="data/processed/base_similitud.csv", top_n=5
-    )
-
-    if similares.empty:
-        st.warning(
-            "No se encontró la base de similitud. Ejecuta primero: python src/crear_base_similitud.py"
-        )
-        return
-
-    for num, (_, row) in enumerate(similares.iterrows(), start=1):
-        with st.container():
-            st.markdown(f"### #{num} Coincidencia: `{row['Nombre']}`")
-
-            if "Carpeta" in row:
-                st.write(f"**Carpeta:** {row['Carpeta']}")
-
-            st.write(f"**Distancia:** {row['Distancia']:.4f}")
-
-            if os.path.exists(row["Archivo"]):
-                st.audio(row["Archivo"], format="audio/wav")
-
-                graficar_forma_onda_archivo(
-                    row["Archivo"], titulo=f"Forma de onda de {row['Nombre']}"
-                )
-            else:
-                st.warning("No se encontró el archivo de audio.")
-
-            col_a, col_b, col_c = st.columns(3)
-
-            with col_a:
-                st.write(f"**F0:** {row['F0']:.2f} Hz")
-                st.write(f"**F1:** {row['F1']:.2f} Hz")
-                st.write(f"**F2:** {row['F2']:.2f} Hz")
-                st.write(f"**E grave:** {row['E_grave']:.6f}")
-
-            with col_b:
-                st.write(f"**E baja:** {row['E_baja']:.6f}")
-                st.write(f"**E media:** {row['E_media']:.6f}")
-                st.write(f"**Fdom:** {row['Fdom']:.2f} Hz")
-                st.write(f"**Centroide:** {row['Centroide']:.2f}")
-
-            with col_c:
-                st.write(f"**Relación E:** {row['Relacion_E']:.6f}")
-                st.write(f"**Relación F:** {row['Relacion_F']:.6f}")
-                st.write(f"**Relación Grave/Media:** {row['Relacion_Grave_Media']:.6f}")
-
-            st.divider()
-
-
-def sistema_clasificador():
-    top_col1, top_col2 = st.columns([1, 5])
-
-    with top_col1:
-        if st.button("🔒 Cerrar sesión"):
+# --- BARRA LATERAL (SIDEBAR NAVIGATION) ---
+with st.sidebar:
+    st.markdown("<h2 style='text-align: center; color: #00FFCC;'>🎙️ Control de Voz</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 12px;'>Ingeniería en IA - ESCOM</p>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    # Mostrar estado de autenticación actual
+    if st.session_state["autenticado"]:
+        st.success(f"🔓 Sesión: {st.session_state['usuario']}")
+        if st.button("🔒 Cerrar Sesión", use_container_width=True, type="secondary"):
             st.session_state["autenticado"] = False
             st.session_state["usuario"] = None
+            st.session_state["seccion_actual"] = "Identificación de Sílabas"
+            st.rerun()
+    else:
+        st.warning("👤 Modo: Invitado / Sin cuenta")
+
+    st.markdown("### 🗺️ Navegación")
+    
+    # Botón 1: Clasificador base (Acceso libre siempre)
+    if st.button("🔍 Analizador de Sílabas & Género", use_container_width=True):
+        st.session_state["seccion_actual"] = "Identificación de Sílabas"
+        st.rerun()
+        
+    st.markdown("---")
+    st.markdown("### 🔐 Seguridad Bio-Vocal")
+    
+    # Botones solicitados para gestión de usuarios
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("👤 Registrar", use_container_width=True, help="Registrar una nueva huella vocal"):
+            st.session_state["seccion_actual"] = "Registrar Usuario"
+            st.rerun()
+    with col_btn2:
+        if st.button("🔑 Validar", use_container_width=True, type="primary" if not st.session_state["autenticado"] else "secondary", help="Iniciar sesión por voz"):
+            st.session_state["seccion_actual"] = "Validar Usuario (Login)"
             st.rerun()
 
-    with top_col2:
-        st.success(f"Usuario autenticado: {st.session_state['usuario']}")
+    st.markdown("---")
+    # Herramientas de administración rápidas
+    with st.expander("🛠️ Utilidades del Sistema"):
+        if st.button("🔄 Forzar Sincronización KNN", use_container_width=True):
+            from similar_finder import crear_base_similitud
+            try:
+                crear_base_similitud()
+                st.toast("Base de similitud actualizada con éxito.", icon="✅")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
-    st.sidebar.header("Configuración")
-    duration = st.sidebar.slider("Duración de grabación (seg)", 1, 5, 3)
-    st.sidebar.write(f"Duración actual: {duration} segundos")
 
-    col1, col2 = st.columns(2)
+# --- RENDERIZADO DEL PANEL PRINCIPAL SEGÚN SECCIÓN ---
 
-    with col1:
-        if st.button("🔴 Iniciar Grabación"):
+# 1. SECCIÓN: IDENTIFICACIÓN (ANALIZADOR WEB PRINCIPAL)
+if st.session_state["seccion_actual"] == "Identificación de Sílabas":
+    st.title("🎙️ Analizador Espectral y Clasificador de Voz")
+    st.markdown("Esta sección utiliza el dataset de entrenamiento base y KNN para identificar características.")
+    
+    col_input, col_results = st.columns([1, 1])
 
-            if "resultado" in st.session_state:
-                del st.session_state["resultado"]
-
-            st.write("🎬 Iniciando grabación...")
-
-            with st.spinner("Grabando..."):
-                os.makedirs("data/raw", exist_ok=True)
-
-                timestamp = time.time_ns()
-                temp_path = f"data/raw/live_capture_{timestamp}.wav"
-
-                path = record_audio(temp_path, duration=duration)
-
-                if path is None:
-                    st.error("❌ Error al grabar audio")
-                    st.stop()
-
-                st.success("✅ Grabación terminada")
-                st.audio(path, format="audio/wav")
-
-            with st.spinner("Analizando frecuencias..."):
+    with col_input:
+        st.markdown("### 🎛️ Captura en Vivo")
+        dur = st.slider("Duración de la grabación (segundos)", 1, 5, 3)
+        
+        if st.button("🔴 Iniciar Grabación", type="primary", use_container_width=True):
+            # ⚡ RESPONSIVIDAD INMEDIATA: Avisamos al usuario en el milisegundo exacto del clic
+            st.toast("🎤 ¡Micrófono activo! Habla ahora...", icon="🔴")
+            aviso_grabando = st.error("🎙️ GRABANDO AUDIO... POR FAVOR HABLA")
+            
+            os.makedirs("data/raw", exist_ok=True)
+            temp_path = f"data/raw/capture_{time.time_ns()}.wav"
+            
+            # Ejecuta la captura física (sd.rec)
+            path = record_audio(temp_path, duration=dur)
+            
+            # ⚡ Elminamos el mensaje de "Terminado". Borramos el aviso de grabación al instante
+            aviso_grabando.empty()
+            
+            if path and os.path.exists(path):
+                # Procesamiento silencioso en segundo plano
                 sr, y = wavfile.read(path)
                 y = normalizar_audio(y)
-
-                graficar_audio(y, sr)
-
                 features = extract_features(y, sr)
-
-                f0 = features[0]
-                f1 = features[1]
-                f2 = features[2]
-
-                e_grave = features[3]
-                e_baja = features[4]
-                e_media = features[5]
-
-                fdom = features[6]
-                centroide = features[7]
-
-                relacion_e = features[8]
-                relacion_f = features[9]
-                relacion_grave_media = features[10]
-
-                st.write(f"F0: {f0:.2f} Hz")
-                st.write(f"F1: {f1:.2f} Hz")
-                st.write(f"F2: {f2:.2f} Hz")
-                st.write(f"Energía Grave: {e_grave:.6f}")
-                st.write(f"Energía Baja: {e_baja:.6f}")
-                st.write(f"Energía Media: {e_media:.6f}")
-                st.write(f"Fdom: {fdom:.2f} Hz")
-                st.write(f"Centroide: {centroide:.2f}")
-                st.write(f"Relación E: {relacion_e:.6f}")
-                st.write(f"Relación F: {relacion_f:.6f}")
-                st.write(f"Relación Grave/Media: {relacion_grave_media:.6f}")
-
-                genero = predictor.predict_genero(f0)
-
-                silaba, vecinos = clasificar_silaba_por_vecinos(
-                    features, csv_base="data/processed/base_similitud.csv", top_n=5
+                
+                # Inferencia de los modelos
+                gen = predictor.predict_genero(features[0])
+                sil, similares = clasificar_silaba_por_vecinos(
+                    features, csv_base="data/processed/base_similitud.csv"
                 )
-
+                
+                # Guardamos en sesión para renderizar la interfaz
                 st.session_state["resultado"] = {
-                    "genero": genero,
-                    "silaba": silaba,
-                    "f0": f0,
-                    "f1": f1,
-                    "f2": f2,
-                    "e_grave": e_grave,
-                    "e_baja": e_baja,
-                    "e_media": e_media,
-                    "fdom": fdom,
-                    "centroide": centroide,
-                    "relacion_e": relacion_e,
-                    "relacion_f": relacion_f,
-                    "relacion_grave_media": relacion_grave_media,
-                    "archivo": path,
-                    "features": features,
+                    "genero": gen, "silaba": sil, "y": y, "sr": sr, 
+                    "features": features, "path": path, "similares": similares
                 }
+                st.toast("Análisis espectral completado", icon="📊")
+            else:
+                st.error("No se pudo detectar entrada de audio válida.")
 
-    with col2:
-        st.subheader("Predicción del Modelo")
+        # Despliegue inmediato del reproductor y la onda si existen resultados
+        if st.session_state["resultado"]:
+            st.markdown("#### Reproducción del Audio Capturado")
+            st.audio(st.session_state["resultado"]["path"])
+            plot_wave(st.session_state["resultado"]["y"], st.session_state["resultado"]["sr"])
 
-        if "resultado" in st.session_state:
+    with col_results:
+        st.markdown("### 📊 Predicciones del Sistema")
+        if st.session_state["resultado"]:
             res = st.session_state["resultado"]
+            
+            m1, m2 = st.columns(2)
+            m1.metric(label="F0 - Género Estimado", value=res["genero"])
+            m2.metric(label="KNN - Sílaba Detectada", value=res["silaba"])
 
-            st.metric(label="Género Detectado", value=res["genero"])
-            st.metric(label="Sílaba Detectada", value=res["silaba"])
-
-            st.write(f"**F0:** {res['f0']:.2f} Hz")
-            st.write(f"**F1:** {res['f1']:.2f} Hz")
-            st.write(f"**F2:** {res['f2']:.2f} Hz")
-            st.write(f"**Energía Grave:** {res['e_grave']:.6f}")
-            st.write(f"**Energía Baja:** {res['e_baja']:.6f}")
-            st.write(f"**Energía Media:** {res['e_media']:.6f}")
-            st.write(f"**Fdom:** {res['fdom']:.2f} Hz")
-            st.write(f"**Centroide:** {res['centroide']:.2f}")
-            st.write(f"**Relación E:** {res['relacion_e']:.6f}")
-            st.write(f"**Relación F:** {res['relacion_f']:.6f}")
-            st.write(f"**Relación Grave/Media:** {res['relacion_grave_media']:.6f}")
-            st.write(f"**Archivo:** `{res['archivo']}`")
-
+            with st.expander("🔍 Desglose de Características Espectrales extraídas", expanded=True):
+                f = res["features"]
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**F0 (Frecuencia Fundamental):** {f[0]:.2f} Hz")
+                    st.write(f"**Formante 1 (F1):** {f[1]:.2f} Hz")
+                    st.write(f"**Formante 2 (F2):** {f[2]:.2f} Hz")
+                    st.write(f"**Frecuencia Dominante (Fdom):** {f[5]:.2f} Hz")
+                with c2:
+                    st.write(f"**Centroide Espectral:** {f[6]:.2f}")
+                    st.write(f"**Energía de Banda Baja:** {f[4]:.6f}")
+                    st.write(f"**Relación de Energías (E):** {f[8]:.6f}")
         else:
-            st.info("Presiona el botón para analizar un audio.")
+            st.info("El panel está listo. Presiona el botón rojo para capturar tu voz.")
 
-    mostrar_similares()
+# 2. SECCIÓN: REGISTRAR NUEVO USUARIO
+elif st.session_state["seccion_actual"] == "Registrar Usuario":
+    st.title("👤 Panel de Registro Biométrico Vocal")
+    st.markdown("Graba una huella vocal única para que el sistema aprenda a reconocerte de forma personalizada.")
+    
+    nombre = st.text_input("Ingresa el identificador o nombre del usuario:", placeholder="Ej. Juan_Perez")
+    
+    st.info("Al presionar el botón, el sistema activará el micrófono de inmediato para procesar tus muestras de voz.")
+    
+    if st.button("🎤 Comenzar Grabación de Registro", type="primary", use_container_width=True):
+        if nombre.strip():
+            with st.spinner(f"Grabando muestras para '{nombre.strip()}'... Mantén el micrófono despejado."):
+                # Llama a tu función local de voice_auth.py
+                exito, mensaje = registrar_usuario(nombre.strip())
+                if exito:
+                    st.success(f"✨ {mensaje}")
+                    st.balloons()
+                    # Redirigir automáticamente a la validación para probar
+                    st.session_state["seccion_actual"] = "Validar Usuario (Login)"
+                else:
+                    st.error(f"Hubo un error en el registro: {mensaje}")
+        else:
+            st.warning("⚠️ Debes rellenar el campo del nombre antes de proceder.")
 
+# 3. SECCIÓN: VALIDAR USUARIO (LOGIN DE DOS FASES)
+elif st.session_state["seccion_actual"] == "Validar Usuario (Login)":
+    st.title("🔐 Validación de Identidad Dinámica de Dos Fases")
+    
+    if "fase_auth" not in st.session_state:
+        st.session_state["fase_auth"] = 1
+    if "f0_calibrado" not in st.session_state:
+        st.session_state["f0_calibrado"] = None
 
-if not st.session_state["autenticado"]:
-    pantalla_login()
-else:
-    sistema_clasificador()
+    if st.session_state["autenticado"]:
+        st.success(f"🎉 Autenticado correctamente como: **{st.session_state['usuario']}**")
+        if st.button("🔄 Probar con otro usuario", use_container_width=True):
+            st.session_state["autenticado"] = False
+            st.session_state["usuario"] = None
+            st.session_state["fase_auth"] = 1
+            st.session_state["f0_calibrado"] = None
+            st.rerun()
+            
+    else:
+        # --- FASE 1: CALIBRACIÓN DE FRECUENCIA ---
+        if st.session_state["fase_auth"] == 1:
+            st.subheader("Fase 1: Calibración del Tono de Voz ($F_0$)")
+            st.info("Por favor, lee el siguiente texto en voz alta para analizar tu frecuencia fundamental:")
+            
+            st.markdown(
+                "> *\"La ingeniería en inteligencia artificial en la Escuela Superior de Cómputo "
+                "desarrolla sistemas capaces de procesar señales biométricas complejas.\"*"
+            )
+            
+            dur_calib = st.slider("Duración de lectura (segundos)", 3, 6, 4, key="dur_c")
+            
+            if st.button("🔴 Iniciar Lectura de Calibración", type="primary", use_container_width=True):
+                st.toast("🎤 Analizando tono fundamental... Lee el texto", icon="🔴")
+                aviso = st.error("🎙️ ESCUCHANDO TEXTO DE CALIBRACIÓN...")
+                
+                os.makedirs("data/auth", exist_ok=True)
+                path_c = "data/auth/calibracion.wav"
+                
+                # Graba el texto largo
+                record_audio(path_c, duration=dur_calib)
+                aviso.empty()
+                
+                if os.path.exists(path_c):
+                    sr, y = wavfile.read(path_c)
+                    y = normalizar_audio(y)
+                    features = extract_features(y, sr)
+                    
+                    # Extraemos y guardamos F0 (Frecuencia Fundamental)
+                    st.session_state["f0_calibrado"] = features[0]
+                    st.session_state["fase_auth"] = 2  # Avanzamos de fase
+                    st.toast("Tono calibrado con éxito", icon="✅")
+                    st.rerun()
+                else:
+                    st.error("No se pudo procesar la calibración.")
+
+        # --- FASE 2: DESAFÍO DE LA FRASE ---
+        elif st.session_state["fase_auth"] == 2:
+            st.subheader("Fase 2: Verificación de Frase de Acceso")
+            st.warning(f"Tono base detectado: {st.session_state['f0_calibrado']:.2f} Hz. Ahora di tu frase rápida.")
+            
+            st.markdown("🗣️ **Frase a decir:** *\"Acceso Seguro Protocolo Alfa\"*")
+            
+            if st.button("🎙️ Grabar Frase de Verificación", type="primary", use_container_width=True):
+                st.toast("🎤 Escuchando frase...", icon="🔴")
+                aviso = st.error("🎙️ DI LA FRASE AHORA...")
+                
+                login_path = "data/auth/login_current.wav"
+                record_audio(login_path, duration=3)
+                aviso.empty()
+                
+                if os.path.exists(login_path):
+                    # 1. Validación de identidad estándar contra tu BD
+                    acceso, usuario, distancia, mensaje = verificar_voz(login_path, umbral=180.0)
+                    
+                    # 2. Validación cruzada de F0 (Comparamos la calibración vs la frase corta)
+                    sr, y = wavfile.read(login_path)
+                    y = normalizar_audio(y)
+                    features_frase = extract_features(y, sr)
+                    f0_frase = features_frase[0]
+                    
+                    # Margen de tolerancia aceptable en Hz entre el texto largo y la frase corta (ej. 25 Hz)
+                    tolerancia_f0 = 25.0
+                    diferencia_f0 = abs(st.session_state["f0_calibrado"] - f0_frase)
+                    
+                    if acceso and (diferencia_f0 <= tolerancia_f0):
+                        st.session_state["autenticado"] = True
+                        st.session_state["usuario"] = usuario
+                        st.success(f"🎉 ¡Acceso Autorizado! Bienvenido {usuario}")
+                        st.balloons()
+                        time.sleep(1.5)
+                        st.session_state["seccion_actual"] = "Identificación de Sílabas"
+                        st.rerun()
+                    else:
+                        st.session_state["fase_auth"] = 1  # Reiniciar si falla
+                        if diferencia_f0 > tolerancia_f0:
+                            st.error(f"❌ Acceso Denegado: Desfase de tono detectado ({diferencia_f0:.2f} Hz de diferencia). ¡Posible suplantación por grabación!")
+                        else:
+                            st.error(f"❌ Acceso Denegado. {mensaje}")
+                else:
+                    st.error("No se pudo capturar la frase.")

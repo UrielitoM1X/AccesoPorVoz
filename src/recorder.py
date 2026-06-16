@@ -41,9 +41,9 @@ def record_audio(filename="data/raw/temp_recording.wav", duration=3):
         # Guardar
         write(filename, fs, recording_int16)
 
-        print(f"✅ Guardado en: {filename}")
+        print(f"Guardado en: {filename}")
         return filename
 
     except Exception as e:
-        print("❌ Error al grabar audio:", e)
+        print("Error al grabar audio:", e)
         return None
