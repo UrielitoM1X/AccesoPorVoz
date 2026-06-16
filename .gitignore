@@ -1,0 +1,56 @@
+# ==========================================
+# Entornos Virtuales y Dependencias (Python)
+# ==========================================
+.venv/
+venv/
+ENV/
+env/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# Cache de Ejecucion y Compilacion
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# ==========================================
+# Datos Dinamicos y Temporales del Proyecto
+# ==========================================
+data/
+
+# Archivos de audio temporales sueltos
+#*.wav
+#*.mp3
+
+# ==========================================
+# Modelos Guardados y Serializados
+# ==========================================
+models/*.pkl
+*.pkl
+*.joblib
+
+# ==========================================
+# Configuraciones de Entornos de Desarrollo (IDE)
+# ==========================================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# ==========================================
+# Archivos del Sistema Operativo
+# ==========================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
